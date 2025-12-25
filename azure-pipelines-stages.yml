@@ -1,0 +1,257 @@
+trigger: none
+
+pool: vishuinfra
+
+variables:
+- group: infracost-secrets 
+
+stages:
+  # --------------------------
+  - stage: initValidatePlan
+    displayName: Terraform Init, Validate and Plan
+    jobs:
+      - job: initValidatePlan
+        displayName: Init, Validate and Plan
+        steps:
+        - task: TerraformTask@5
+          displayName: terraformInit
+          inputs:
+            provider: 'azurerm'
+            command: 'init'
+            backendServiceArm: 'vishuinfra'
+            backendAzureRmStorageAccountName: 'strgbackenddevvishu'
+            backendAzureRmContainerName: 'container-backend-dev-vishu'
+            backendAzureRmKey: 'dev.tfstate'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev' 
+        - task: TerraformTask@5
+          displayName: terraformValidate
+          inputs:
+            provider: 'azurerm'
+            command: 'validate'
+        - task: TerraformTask@5
+          displayName: terraformPlan
+          inputs:
+            provider: 'azurerm'
+            command: 'plan'
+            environmentServiceNameAzureRM: 'vishuinfra'
+            commandOptions: '-var-file="dev.tfvars"' 
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+
+  # --------------------------
+  - stage: securityScanning
+    displayName: Security Scanning
+    dependsOn: initValidatePlan
+    jobs:
+      - job: tflint
+        displayName: TFLint Scan
+        steps:
+        - task: CmdLine@2
+          displayName: Run TFLint
+          continueOnError: true
+          inputs:
+            script: 'C:\Tools\tflint.exe --recursive --format junit > tflint-report.xml || exit 0'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+        - task: PublishTestResults@2
+          displayName: Publish TFLint Report
+          inputs:
+            testResultsFormat: 'JUnit'
+            testResultsFiles: 'tflint-report.xml'
+            testRunTitle: 'TFLint Scan'
+        - task: PublishBuildArtifacts@1
+          displayName: Publish TFLint Artifact
+          inputs:
+            pathToPublish: '$(System.DefaultWorkingDirectory)/environments/dev/tflint-report.xml'
+            artifactName: 'tflint-report'
+
+      - job: checkov
+        displayName: Checkov Scan
+        steps:
+        - task: CmdLine@2
+          displayName: Run Checkov
+          continueOnError: true
+          inputs:
+            script: 'C:\Tools\checkov.exe -d . -o junitxml --soft-fail > checkov-out.xml || exit 0'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+        - task: PublishTestResults@2
+          displayName: Publish Checkov Report
+          inputs:
+            testResultsFormat: 'JUnit'
+            testResultsFiles: 'checkov-out.xml'
+            testRunTitle: 'Checkov Scan'
+        - task: PublishBuildArtifacts@1
+          displayName: Publish Checkov Artifact
+          inputs:
+            pathToPublish: '$(System.DefaultWorkingDirectory)/environments/dev/checkov-out.xml'
+            artifactName: 'checkov-report'
+
+  # --------------------------
+  - stage: costEstimation
+    displayName: Cost Estimation
+    dependsOn: securityScanning
+    jobs:
+      - job: infracost
+        displayName: Infracost Scan
+        steps:
+
+        # Step 0: Debug API Key
+        - task: CmdLine@2
+          displayName: DEBUG - Check Infracost API Key
+          env:
+            INFRACOST_API_KEY: $(INFRACOST_API_KEY)
+          inputs:
+            script: |
+              if "%INFRACOST_API_KEY%"=="" (
+                echo 
+              ) else (
+                echo
+              )
+
+        # Step 1: Verify Infracost version
+        - task: CmdLine@2
+          displayName: Verify Infracost
+          inputs:
+            script: 'C:\Tools\infracost.exe --version'
+
+        # Step 2: Run Infracost Breakdown
+        - task: CmdLine@2
+          displayName: Run Infracost Breakdown
+          env:
+            INFRACOST_API_KEY: $(INFRACOST_API_KEY)
+          inputs:
+            script: 'C:\Tools\infracost.exe breakdown --path . --format html --out-file cost-out.html'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+
+        # Step 3: Publish HTML report
+        - task: PublishBuildArtifacts@1
+          displayName: Publish Infracost Report
+          inputs:
+            pathToPublish: '$(System.DefaultWorkingDirectory)/environments/dev/cost-out.html'
+            artifactName: 'infracost-html'
+            publishLocation: 'Container'
+
+  # --------------------------
+  - stage: Apply
+    displayName: Terraform Apply
+    dependsOn: costEstimation
+    jobs:
+      - job: Apply
+        displayName: Apply
+        steps:
+        # Step 1: Init
+        - task: TerraformTask@5
+          displayName: terraformInitApply
+          inputs:
+            provider: 'azurerm'
+            command: 'init'
+            backendServiceArm: 'vishuinfra'
+            backendAzureRmStorageAccountName: 'strgbackenddevvishu'
+            backendAzureRmContainerName: 'container-backend-dev-vishu'
+            backendAzureRmKey: 'dev.tfstate'
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev' 
+
+        # Step 2: Apply
+        - task: TerraformTask@5
+          displayName: terraformApply
+          inputs:
+            provider: 'azurerm'
+            command: 'apply'
+            environmentServiceNameAzureRM: 'vishuinfra'
+            commandOptions: '-var-file="dev.tfvars" -auto-approve' 
+            workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+
+
+#   trigger: none
+
+# pool: vishuinfra
+
+# stages:
+#   - stage: initValidatePlan
+#     displayName: Terraform Init, Validate and Plan
+#     jobs:
+#       - job: initValidatePlan
+#         displayName: Init, Validate and Plan
+#         steps:
+#         - task: TerraformTask@5
+#           displayName: terraformInit
+#           inputs:
+#             provider: 'azurerm'
+#             command: 'init'
+#             backendServiceArm: 'vishuinfra'
+#             backendAzureRmStorageAccountName: 'strgbackenddevvishu'
+#             backendAzureRmContainerName: 'container-backend-dev-vishu'
+#             backendAzureRmKey: 'dev.tfstate'
+#             workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev' 
+#         - task: TerraformTask@5
+#           displayName: terraformValidate
+#           inputs:
+#             provider: 'azurerm'
+#             command: 'validate'
+            
+#         - task: TerraformTask@5
+#           displayName: terraformPlan
+#           inputs:
+#             provider: 'azurerm'
+#             command: 'plan'
+#             environmentServiceNameAzureRM: 'vishuinfra'
+#             commandOptions: '-var-file="dev.tfvars"' 
+#             workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev' 
+
+#   - stage: securityScanning
+#     displayName: Security Scanning
+#     dependsOn: initValidatePlan
+#     jobs:
+#       - job: tflint
+#         displayName: tflint
+#         steps:
+#         - task: CmdLine@2
+#           displayName: tflint
+#           continueOnError: true
+#           inputs:
+#             script: 'tflint --recursive /f junit > tflint-report.xml'
+#             workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+#         - task: PublishTestResults@2
+#           displayName: tflint-report publish
+#           inputs:
+#             testResultsFormat: 'JUnit'
+#             testResultsFiles: 'tflint-report.xml'
+#             testRunTitle: 'tflint-scan'
+
+
+#       - job: checkov
+#         dependsOn: tflint
+#         displayName: checkov
+#         steps:
+#         - task: CmdLine@2
+#           displayName: checkov
+#           continueOnError: true
+#           inputs:
+#             script: 'checkov -d . -o junitxml > checkov-out.xml'
+#             workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+#         - task: PublishTestResults@2
+#           displayName: checkov-publish
+#           inputs:
+#             testResultsFormat: 'JUnit'
+#             testResultsFiles: 'checkov-out.xml'
+#             testRunTitle: 'checkov'
+        
+#   - stage: costEstimation
+#     displayName: Cost Estimation
+#     jobs:
+#       - job: infracost
+#         displayName: infracost
+#         steps:
+#         - task: CmdLine@2
+#           displayName: infracost
+#           inputs:
+#             script: 'infracost breakdown --path . --format=html > cost-out.html'
+#             workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+
+#         - task: PublishBuildArtifacts@1
+#           displayName: publish cost
+#           inputs:
+#             PathtoPublish: '$(System.DefaultWorkingDirectory)/environments/dev/cost-out.html'
+#             ArtifactName: 'costing'
+#             publishLocation: 'Container'
+
+
+ 
